@@ -9,11 +9,17 @@ import (
 	"github.com/Harichandra-Prasath/Kaekudha/internal/session"
 )
 
-type Server struct {
-	conn *net.UDPConn
+const (
+	MAX_MESSAGE_BYTES = 100
+	SERVER_ID         = "SERVER"
+)
 
-	clients  map[protocol.ID]*session.User
-	sessions map[protocol.ID]*session.Session
+type Server struct {
+	conn         *net.UDPConn
+	serverPacket *protocol.Packet
+	serverID     protocol.ID
+	clients      map[protocol.ID]*session.User
+	sessions     map[protocol.ID]*session.Session
 }
 
 func NewServer(host string) (*Server, error) {
@@ -25,8 +31,9 @@ func NewServer(host string) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listening on addr: %s", err)
 	}
-
-	return &Server{clients: map[protocol.ID]*session.User{}, sessions: map[protocol.ID]*session.Session{}, conn: conn}, nil
+	var id protocol.ID
+	copy(id[:], []byte(SERVER_ID))
+	return &Server{clients: map[protocol.ID]*session.User{}, sessions: map[protocol.ID]*session.Session{}, conn: conn, serverPacket: protocol.NewPacket(MAX_MESSAGE_BYTES + protocol.HEADER_SIZE), serverID: id}, nil
 }
 
 func (S *Server) Start() {
@@ -51,15 +58,28 @@ func (S *Server) Start() {
 	}
 }
 
+func (S *Server) writeResponse(addr *net.UDPAddr, msg string) {
+	S.serverPacket.SetHeader(protocol.RESP, S.serverID)
+	S.serverPacket.SetPayloadLength(uint32(len(msg)))
+	copy(S.serverPacket.Buf[protocol.HEADER_SIZE:], []byte(msg))
+	S.conn.WriteToUDP(S.serverPacket.Buf[:], addr)
+}
+
 func (S *Server) handleSessionCreation(buf []byte, addr *net.UDPAddr) {
 	hostId := buf[:8]
 	sessionId := buf[protocol.HEADER_SIZE : protocol.HEADER_SIZE+8]
 	s, host := session.CreateNewSession(protocol.ID(sessionId), protocol.ID(hostId), addr)
 
+	if _, ok := S.sessions[protocol.ID(sessionId)]; ok {
+		slog.Warn("Session Exists with the name already")
+		S.writeResponse(addr, "ERR_DUPLICATE_SESSION")
+	}
+
 	S.sessions[protocol.ID(sessionId)] = s
 	S.clients[protocol.ID(hostId)] = host
 
 	slog.Info("New Session Created", "session", string(sessionId))
+	S.writeResponse(addr, "")
 }
 
 func (S *Server) handleSessionJoin(buf []byte, addr *net.UDPAddr) {
@@ -68,11 +88,13 @@ func (S *Server) handleSessionJoin(buf []byte, addr *net.UDPAddr) {
 	session, ok := S.sessions[protocol.ID(sessionId)]
 	if !ok {
 		slog.Warn("Trying to Join Non-Exisiting Session", "client", string(clientId), "clientAddr", addr.String())
+		S.writeResponse(addr, "ERR_INVALID_SESSION")
 		return
 	}
 	_, ok = S.clients[protocol.ID(clientId)]
 	if ok {
 		slog.Warn("User already exist with the same Id", "client", string(clientId))
+		S.writeResponse(addr, "ERR_DUPLICATE_USER")
 		return
 	}
 
@@ -80,6 +102,7 @@ func (S *Server) handleSessionJoin(buf []byte, addr *net.UDPAddr) {
 	S.clients[protocol.ID(clientId)] = user
 
 	slog.Info("User Added to Session", "session", string(sessionId), "client", string(clientId))
+	S.writeResponse(addr, "")
 }
 
 func (S *Server) handleAudio(buf []byte) {

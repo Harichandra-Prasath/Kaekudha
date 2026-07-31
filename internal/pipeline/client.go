@@ -27,10 +27,10 @@ type Client struct {
 }
 
 type handler struct {
-	outPacket *protocol.VoicePacket
+	outPacket *protocol.Packet
 	outChan   chan []byte
 
-	inPacket *protocol.VoicePacket
+	inPacket *protocol.Packet
 	inChan   chan *[]byte
 }
 
@@ -47,9 +47,9 @@ func GetNewClient(name string, host string) (*Client, error) {
 	copy(id[:], name)
 
 	h := handler{
-		outPacket: protocol.NewVoicePocket(MAX_AUDIO_BYTES + protocol.HEADER_SIZE),
+		outPacket: protocol.NewPacket(MAX_AUDIO_BYTES + protocol.HEADER_SIZE),
 		outChan:   make(chan []byte, BUFFER_SIZE),
-		inPacket:  protocol.NewVoicePocket(MAX_AUDIO_BYTES + protocol.HEADER_SIZE),
+		inPacket:  protocol.NewPacket(MAX_AUDIO_BYTES + protocol.HEADER_SIZE),
 		inChan:    make(chan *[]byte, BUFFER_SIZE),
 	}
 
@@ -125,6 +125,10 @@ func (C *Client) sendInitEvent(event protocol.Event, sessionId protocol.ID) erro
 	if err != nil {
 		return fmt.Errorf("writing init event: %v", err)
 	}
+	msg := <-C.handler.inChan
+	if len(*msg) != 0 {
+		return fmt.Errorf("error response from server: %s", string(*msg))
+	}
 	return nil
 }
 
@@ -156,6 +160,13 @@ func (C *Client) startInflow(errChan chan<- error) {
 
 		event := packet.Buf[8]
 		switch event {
+		case byte(protocol.RESP):
+			payloadLen := binary.BigEndian.Uint32(packet.Buf[9:13])
+			// One time Allocation
+			buff := make([]byte, payloadLen)
+			copy(buff[:], packet.Buf[protocol.HEADER_SIZE:protocol.HEADER_SIZE+payloadLen])
+			C.handler.inChan <- &buff
+
 		case byte(protocol.SEND):
 			payloadLen := binary.BigEndian.Uint32(packet.Buf[9:13])
 			n, err := C.codec.Decode(packet.Buf[protocol.HEADER_SIZE:protocol.HEADER_SIZE+payloadLen], samples)
