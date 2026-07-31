@@ -53,6 +53,8 @@ func (S *Server) Start() {
 			S.handleSessionJoin(buffer[:n], clientAddr)
 		case protocol.SEND:
 			S.handleAudio(buffer[:n])
+		case protocol.END:
+			S.handleEnd(buffer[:n])
 		}
 
 	}
@@ -66,9 +68,9 @@ func (S *Server) writeResponse(addr *net.UDPAddr, msg string) {
 }
 
 func (S *Server) handleSessionCreation(buf []byte, addr *net.UDPAddr) {
-	hostId := buf[:8]
+	userId := buf[:8]
 	sessionId := buf[protocol.HEADER_SIZE : protocol.HEADER_SIZE+8]
-	s, host := session.CreateNewSession(protocol.ID(sessionId), protocol.ID(hostId), addr)
+	s, user := session.CreateNewSession(protocol.ID(sessionId), protocol.ID(userId), addr)
 
 	if _, ok := S.sessions[protocol.ID(sessionId)]; ok {
 		slog.Warn("Session Exists with the name already")
@@ -76,7 +78,7 @@ func (S *Server) handleSessionCreation(buf []byte, addr *net.UDPAddr) {
 	}
 
 	S.sessions[protocol.ID(sessionId)] = s
-	S.clients[protocol.ID(hostId)] = host
+	S.clients[protocol.ID(userId)] = user
 
 	slog.Info("New Session Created", "session", string(sessionId))
 	S.writeResponse(addr, "")
@@ -109,7 +111,6 @@ func (S *Server) handleAudio(buf []byte) {
 	clientId := buf[:8]
 	user, ok := S.clients[protocol.ID(clientId)]
 	if !ok {
-		slog.Warn("Client not Present in the server", "client", string(clientId))
 		return
 	}
 	session := user.GetSession()
@@ -123,4 +124,22 @@ func (S *Server) handleAudio(buf []byte) {
 			}
 		}
 	}
+}
+
+func (S *Server) handleEnd(buf []byte) {
+	clientId := buf[:8]
+	user, ok := S.clients[protocol.ID(clientId)]
+	if !ok {
+		slog.Warn("Client not Present in the server", "client", string(clientId))
+		return
+	}
+	session := user.GetSession()
+	session.RemoveUser(protocol.ID(clientId))
+	delete(S.clients, user.GetId())
+	slog.Info("User Removed from Session", "Client", user.GetId().String(), "Session", session.GetId().String())
+	if len(session.GetUsers()) == 0 {
+		slog.Info("No Clients Present on Session. Removing the Session...", "Session", session.GetId().String())
+		delete(S.sessions, session.GetId())
+	}
+	S.writeResponse(user.GetAddr(), "")
 }

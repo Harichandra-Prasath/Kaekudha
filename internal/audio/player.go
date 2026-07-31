@@ -25,9 +25,13 @@ func NewPlayer(inChan <-chan *[]byte) (*Player, error) {
 
 	deviceCallbacks := malgo.DeviceCallbacks{
 		Data: func(pOutputSample, pInputSamples []byte, framecount uint32) {
-			pcm := <-inChan
-			copy(pOutputSample, *pcm)
-			PcmPool.Put(pcm)
+			select {
+			case pcm := <-inChan:
+				copy(pOutputSample, *pcm)
+				PcmPool.Put(pcm)
+			default:
+				clear(pOutputSample)
+			}
 		},
 	}
 
@@ -44,4 +48,12 @@ func (P *Player) Start(errChan chan<- error) {
 	if err != nil {
 		errChan <- fmt.Errorf("player device start: %v", err)
 	}
+}
+
+func (P *Player) Stop() error {
+	err := P.device.Stop()
+	if err != nil {
+		return fmt.Errorf("player device stop: %v", err)
+	}
+	return nil
 }

@@ -50,3 +50,11 @@ func (R *Recorder) Start(errChan chan<- error) {
 		errChan <- fmt.Errorf("recording device start: %v", err)
 	}
 }
+
+func (R *Recorder) Stop() error {
+	err := R.device.Stop()
+	if err != nil {
+		return fmt.Errorf("recording device stop: %v", err)
+	}
+	return nil
+}

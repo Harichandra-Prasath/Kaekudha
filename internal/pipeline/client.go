@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"time"
 	"unsafe"
 
 	"github.com/Harichandra-Prasath/Kaekudha/internal/audio"
@@ -23,6 +24,7 @@ type Client struct {
 	recorder *audio.Recorder
 	player   *audio.Player
 	codec    *audio.Codec
+	timer    *time.Timer
 	errChan  chan error
 }
 
@@ -32,6 +34,8 @@ type handler struct {
 
 	inPacket *protocol.Packet
 	inChan   chan *[]byte
+
+	respChan chan *[]byte
 }
 
 func GetNewClient(name string, host string) (*Client, error) {
@@ -51,6 +55,7 @@ func GetNewClient(name string, host string) (*Client, error) {
 		outChan:   make(chan []byte, BUFFER_SIZE),
 		inPacket:  protocol.NewPacket(MAX_AUDIO_BYTES + protocol.HEADER_SIZE),
 		inChan:    make(chan *[]byte, BUFFER_SIZE),
+		respChan:  make(chan *[]byte, 64),
 	}
 
 	rec, err := audio.NewRecorder(h.outChan)
@@ -76,6 +81,7 @@ func GetNewClient(name string, host string) (*Client, error) {
 		player:   player,
 		codec:    codec,
 		errChan:  make(chan error),
+		timer:    time.NewTimer(5 * time.Second),
 	}, nil
 }
 
@@ -109,6 +115,27 @@ func (C *Client) Start(create string, join string) error {
 	return nil
 }
 
+func (C *Client) Stop() {
+	err := C.recorder.Stop()
+	if err != nil {
+		slog.Error("Error stopping the recorder device", "err", err)
+	}
+	slog.Info("Recorder Stopped")
+	err = C.player.Stop()
+	if err != nil {
+		slog.Error("Error stopping the player device", "err", err)
+	}
+	slog.Info("Player Stopped")
+	packet := C.handler.outPacket
+	packet.SetHeader(protocol.END, C.id)
+	C.conn.Write(packet.Buf[:protocol.HEADER_SIZE])
+	err = C.getServerResp()
+	if err != nil {
+		slog.Error("Error getting Server Response", "err", err)
+	}
+	slog.Info("Cleanup Completed")
+}
+
 func (C *Client) checkError() {
 	for err := range C.errChan {
 		panic(fmt.Sprintf("fatal error in client pipeline: %v", err))
@@ -125,11 +152,34 @@ func (C *Client) sendInitEvent(event protocol.Event, sessionId protocol.ID) erro
 	if err != nil {
 		return fmt.Errorf("writing init event: %v", err)
 	}
-	msg := <-C.handler.inChan
-	if len(*msg) != 0 {
-		return fmt.Errorf("error response from server: %s", string(*msg))
+	err = C.getServerResp()
+	if err != nil {
+		return fmt.Errorf("getting server response: %v", err)
 	}
 	return nil
+}
+
+func (C *Client) getServerResp() error {
+	// Safeguard
+	if !C.timer.Stop() {
+		select {
+		case <-C.timer.C:
+		default:
+		}
+	}
+
+	C.timer.Reset(5 * time.Second)
+	for {
+		select {
+		case msg := <-C.handler.respChan:
+			if len(*msg) == 0 {
+				return nil
+			}
+			return fmt.Errorf("error response from server: %s", string(*msg))
+		case <-C.timer.C:
+			return fmt.Errorf("timed-out waiting for server")
+		}
+	}
 }
 
 func (C *Client) startOutFlow(errChan chan<- error) {
@@ -165,7 +215,7 @@ func (C *Client) startInflow(errChan chan<- error) {
 			// One time Allocation
 			buff := make([]byte, payloadLen)
 			copy(buff[:], packet.Buf[protocol.HEADER_SIZE:protocol.HEADER_SIZE+payloadLen])
-			C.handler.inChan <- &buff
+			C.handler.respChan <- &buff
 
 		case byte(protocol.SEND):
 			payloadLen := binary.BigEndian.Uint32(packet.Buf[9:13])

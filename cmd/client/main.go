@@ -81,4 +81,5 @@ func main() {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	sig := <-sigChan
 	slog.Info("End Signal Recieved", "Signal", sig.String())
+	client.Stop()
 }

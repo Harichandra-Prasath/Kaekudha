@@ -9,6 +9,7 @@ const (
 	JOIN_SESSION   Event = 2
 	SEND           Event = 3
 	RESP           Event = 4
+	END            Event = 5
 )
 
 const HEADER_SIZE = 13

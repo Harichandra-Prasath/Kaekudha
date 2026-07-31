@@ -19,3 +19,7 @@ func (U *User) GetSession() *Session {
 func (U *User) GetAddr() *net.UDPAddr {
 	return U.addr
 }
+
+func (U *User) GetId() protocol.ID {
+	return U.id
+}
