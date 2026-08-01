@@ -3,6 +3,9 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/Harichandra-Prasath/Kaekudha/internal/logger"
 	"github.com/Harichandra-Prasath/Kaekudha/internal/pipeline"
@@ -18,4 +21,9 @@ func main() {
 	}
 	slog.Info("Listening for data....")
 	server.Start()
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	sig := <-sigChan
+	slog.Info("End Signal Recieved", "Signal", sig.String())
+	server.Stop()
 }

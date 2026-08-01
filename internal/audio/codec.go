@@ -12,7 +12,7 @@ type Codec struct {
 	decoder *opus.Decoder
 }
 
-const GAIN = 6
+const GAIN = 5
 
 func NewCodec() (*Codec, error) {
 	enc, err := opus.NewEncoder(SAMPLE_RATE, CHANNELS, opus.AppVoIP)

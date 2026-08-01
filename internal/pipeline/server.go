@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	MAX_MESSAGE_BYTES = 100
+	MAX_MESSAGE_BYTES = 50
 	SERVER_ID         = "SERVER"
 )
 
@@ -37,26 +37,37 @@ func NewServer(host string) (*Server, error) {
 }
 
 func (S *Server) Start() {
-	buffer := make([]byte, protocol.HEADER_SIZE+MAX_AUDIO_BYTES)
-	for {
-		n, clientAddr, err := S.conn.ReadFromUDP(buffer)
-		if err != nil {
-			panic(fmt.Sprintf("error reading from conn: %v", err))
-		}
-		event := buffer[8]
-		switch protocol.Event(event) {
-		case protocol.CREATE_SESSION:
-			slog.Info("CREATE_SESSION Recived", "clientAddr", clientAddr.String())
-			S.handleSessionCreation(buffer[:n], clientAddr)
-		case protocol.JOIN_SESSION:
-			slog.Info("JOIN_SESSION Recived", "clientAddr", clientAddr.String())
-			S.handleSessionJoin(buffer[:n], clientAddr)
-		case protocol.SEND:
-			S.handleAudio(buffer[:n])
-		case protocol.END:
-			S.handleEnd(buffer[:n])
-		}
+	go func() {
+		buffer := make([]byte, protocol.HEADER_SIZE+MAX_AUDIO_BYTES)
+		for {
+			n, clientAddr, err := S.conn.ReadFromUDP(buffer)
+			if err != nil {
+				panic(fmt.Sprintf("error reading from conn: %v", err))
+			}
+			event := buffer[8]
+			switch protocol.Event(event) {
+			case protocol.CREATE_SESSION:
+				slog.Info("CREATE_SESSION Recived", "clientAddr", clientAddr.String())
+				S.handleSessionCreation(buffer[:n], clientAddr)
+			case protocol.JOIN_SESSION:
+				slog.Info("JOIN_SESSION Recived", "clientAddr", clientAddr.String())
+				S.handleSessionJoin(buffer[:n], clientAddr)
+			case protocol.SEND:
+				S.handleAudio(buffer[:n])
+			case protocol.END:
+				S.handleEnd(buffer[:n])
+			}
 
+		}
+	}()
+}
+
+func (S *Server) Stop() {
+	// Write END to all the clients
+	slog.Info("Writing END Event to All Clients")
+	for _, addr := range S.clients {
+		S.serverPacket.SetHeader(protocol.END, S.serverID)
+		S.conn.WriteToUDP(S.serverPacket.Buf[:], addr.GetAddr())
 	}
 }
 
@@ -68,48 +79,58 @@ func (S *Server) writeResponse(addr *net.UDPAddr, msg string) {
 }
 
 func (S *Server) handleSessionCreation(buf []byte, addr *net.UDPAddr) {
-	userId := buf[:8]
-	sessionId := buf[protocol.HEADER_SIZE : protocol.HEADER_SIZE+8]
-	s, user := session.CreateNewSession(protocol.ID(sessionId), protocol.ID(userId), addr)
+	clientBytes := buf[:8]
+	sessBytes := buf[protocol.HEADER_SIZE : protocol.HEADER_SIZE+8]
 
-	if _, ok := S.sessions[protocol.ID(sessionId)]; ok {
+	sessionId := protocol.ID(sessBytes)
+	clientId := protocol.ID(clientBytes)
+
+	if _, ok := S.sessions[sessionId]; ok {
 		slog.Warn("Session Exists with the name already")
 		S.writeResponse(addr, "ERR_DUPLICATE_SESSION")
+		return
 	}
 
-	S.sessions[protocol.ID(sessionId)] = s
-	S.clients[protocol.ID(userId)] = user
+	s, user := session.CreateNewSession(sessionId, clientId, addr)
 
-	slog.Info("New Session Created", "session", string(sessionId))
+	S.sessions[sessionId] = s
+	S.clients[clientId] = user
+
+	slog.Info("New Session Created", "session", sessionId.String())
 	S.writeResponse(addr, "")
 }
 
 func (S *Server) handleSessionJoin(buf []byte, addr *net.UDPAddr) {
-	clientId := buf[:8]
-	sessionId := buf[protocol.HEADER_SIZE : protocol.HEADER_SIZE+8]
-	session, ok := S.sessions[protocol.ID(sessionId)]
+	clientBytes := buf[:8]
+	sessBytes := buf[protocol.HEADER_SIZE : protocol.HEADER_SIZE+8]
+
+	sessionId := protocol.ID(sessBytes)
+	clientId := protocol.ID(clientBytes)
+
+	session, ok := S.sessions[sessionId]
 	if !ok {
-		slog.Warn("Trying to Join Non-Exisiting Session", "client", string(clientId), "clientAddr", addr.String())
+		slog.Warn("Trying to Join Non-Exisiting Session", "client", clientId.String(), "clientAddr", addr.String())
 		S.writeResponse(addr, "ERR_INVALID_SESSION")
 		return
 	}
-	_, ok = S.clients[protocol.ID(clientId)]
+	_, ok = S.clients[clientId]
 	if ok {
-		slog.Warn("User already exist with the same Id", "client", string(clientId))
+		slog.Warn("User already exist with the same Id", "client", clientId.String())
 		S.writeResponse(addr, "ERR_DUPLICATE_USER")
 		return
 	}
 
-	user := session.AddUser(protocol.ID(clientId), addr)
-	S.clients[protocol.ID(clientId)] = user
+	user := session.AddUser(clientId, addr)
+	S.clients[clientId] = user
 
-	slog.Info("User Added to Session", "session", string(sessionId), "client", string(clientId))
+	slog.Info("User Added to Session", "session", sessionId.String(), "client", clientId.String())
 	S.writeResponse(addr, "")
 }
 
 func (S *Server) handleAudio(buf []byte) {
-	clientId := buf[:8]
-	user, ok := S.clients[protocol.ID(clientId)]
+	clientBytes := buf[:8]
+	clientId := protocol.ID(clientBytes)
+	user, ok := S.clients[clientId]
 	if !ok {
 		return
 	}
@@ -117,7 +138,7 @@ func (S *Server) handleAudio(buf []byte) {
 	sessionUsers := session.GetUsers()
 
 	for id, sessionUser := range sessionUsers {
-		if id != protocol.ID(clientId) {
+		if id != clientId {
 			_, err := S.conn.WriteToUDP(buf, sessionUser.GetAddr())
 			if err != nil {
 				slog.Error("Error writing to client", "client", id.String())
@@ -127,14 +148,16 @@ func (S *Server) handleAudio(buf []byte) {
 }
 
 func (S *Server) handleEnd(buf []byte) {
-	clientId := buf[:8]
-	user, ok := S.clients[protocol.ID(clientId)]
+	clientBytes := buf[:8]
+	clientId := protocol.ID(clientBytes)
+
+	user, ok := S.clients[clientId]
 	if !ok {
-		slog.Warn("Client not Present in the server", "client", string(clientId))
+		slog.Warn("Client not Present in the server", "client", clientId.String())
 		return
 	}
 	session := user.GetSession()
-	session.RemoveUser(protocol.ID(clientId))
+	session.RemoveUser(clientId)
 	delete(S.clients, user.GetId())
 	slog.Info("User Removed from Session", "Client", user.GetId().String(), "Session", session.GetId().String())
 	if len(session.GetUsers()) == 0 {

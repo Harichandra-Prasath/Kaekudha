@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"time"
 	"unsafe"
 
@@ -115,7 +116,7 @@ func (C *Client) Start(create string, join string) error {
 	return nil
 }
 
-func (C *Client) Stop() {
+func (C *Client) cleanup() {
 	err := C.recorder.Stop()
 	if err != nil {
 		slog.Error("Error stopping the recorder device", "err", err)
@@ -126,14 +127,20 @@ func (C *Client) Stop() {
 		slog.Error("Error stopping the player device", "err", err)
 	}
 	slog.Info("Player Stopped")
+
+	slog.Info("Cleanup Completed")
+}
+
+func (C *Client) Stop() {
+	C.cleanup()
+
 	packet := C.handler.outPacket
 	packet.SetHeader(protocol.END, C.id)
 	C.conn.Write(packet.Buf[:protocol.HEADER_SIZE])
-	err = C.getServerResp()
+	err := C.getServerResp()
 	if err != nil {
 		slog.Error("Error getting Server Response", "err", err)
 	}
-	slog.Info("Cleanup Completed")
 }
 
 func (C *Client) checkError() {
@@ -234,6 +241,11 @@ func (C *Client) startInflow(errChan chan<- error) {
 			}
 
 			C.handler.inChan <- buf
+		case byte(protocol.END):
+			slog.Info("END Event Recieved From Server. Exiting...")
+			C.cleanup()
+			os.Exit(0)
 		}
+
 	}
 }

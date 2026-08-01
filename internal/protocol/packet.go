@@ -1,6 +1,9 @@
 package protocol
 
-import "encoding/binary"
+import (
+	"bytes"
+	"encoding/binary"
+)
 
 type Event uint8
 
@@ -17,7 +20,11 @@ const HEADER_SIZE = 13
 type ID [8]byte
 
 func (id ID) String() string {
-	return string(id[:])
+	n := bytes.IndexByte(id[:], 0)
+	if n == -1 {
+		n = len(id)
+	}
+	return string(id[:n])
 }
 
 type Packet struct {
