@@ -3,6 +3,7 @@ package audio
 import (
 	"fmt"
 
+	"github.com/Harichandra-Prasath/Kaekudha/internal/storage"
 	"github.com/gen2brain/malgo"
 )
 
@@ -11,7 +12,7 @@ type Player struct {
 	device *malgo.Device
 }
 
-func NewPlayer(inChan <-chan *[]byte) (*Player, error) {
+func NewPlayer(inChan *storage.RingBuffer[*[]byte]) (*Player, error) {
 	ctx, err := malgo.InitContext(nil, malgo.ContextConfig{}, func(message string) {})
 	if err != nil {
 		return nil, fmt.Errorf("initialsing new context: %v", err)
@@ -25,13 +26,12 @@ func NewPlayer(inChan <-chan *[]byte) (*Player, error) {
 
 	deviceCallbacks := malgo.DeviceCallbacks{
 		Data: func(pOutputSample, pInputSamples []byte, framecount uint32) {
-			select {
-			case pcm := <-inChan:
-				copy(pOutputSample, *pcm)
-				PcmPool.Put(pcm)
-			default:
-				clear(pOutputSample)
+			v, ok := inChan.Pop()
+			if !ok {
+				return
 			}
+			copy(pOutputSample, *v)
+			PcmPool.Put(v)
 		},
 	}
 

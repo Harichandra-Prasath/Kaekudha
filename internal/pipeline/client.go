@@ -11,10 +11,11 @@ import (
 
 	"github.com/Harichandra-Prasath/Kaekudha/internal/audio"
 	"github.com/Harichandra-Prasath/Kaekudha/internal/protocol"
+	"github.com/Harichandra-Prasath/Kaekudha/internal/storage"
 )
 
 const (
-	BUFFER_SIZE     = 5
+	BUFFER_SIZE     = 50
 	MAX_AUDIO_BYTES = 200
 )
 
@@ -34,7 +35,7 @@ type handler struct {
 	outChan   chan []byte
 
 	inPacket *protocol.Packet
-	inChan   chan *[]byte
+	inChan   *storage.RingBuffer[*[]byte]
 
 	respChan chan *[]byte
 }
@@ -55,7 +56,7 @@ func GetNewClient(name string, host string) (*Client, error) {
 		outPacket: protocol.NewPacket(MAX_AUDIO_BYTES + protocol.HEADER_SIZE),
 		outChan:   make(chan []byte, BUFFER_SIZE),
 		inPacket:  protocol.NewPacket(MAX_AUDIO_BYTES + protocol.HEADER_SIZE),
-		inChan:    make(chan *[]byte, BUFFER_SIZE),
+		inChan:    storage.New[*[]byte](BUFFER_SIZE),
 		respChan:  make(chan *[]byte, 64),
 	}
 
@@ -240,7 +241,10 @@ func (C *Client) startInflow(errChan chan<- error) {
 				binary.LittleEndian.PutUint16(buff[i*2:], uint16(s))
 			}
 
-			C.handler.inChan <- buf
+			if ok := C.handler.inChan.Push(buf); !ok {
+				slog.Info("Dropping packets. Try increasing the buffer size...")
+				continue
+			}
 		case byte(protocol.END):
 			slog.Info("END Event Recieved From Server. Exiting...")
 			C.cleanup()
